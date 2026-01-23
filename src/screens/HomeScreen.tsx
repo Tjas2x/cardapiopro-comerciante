@@ -1,4 +1,11 @@
-import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   View,
   Text,
@@ -10,7 +17,7 @@ import {
   Switch,
   Image,
 } from "react-native";
-import { useNavigation } from "@react-navigation/native";
+import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Audio } from "expo-av";
 
@@ -69,12 +76,16 @@ export default function HomeScreen() {
   // 🔊 Som (carrega 1 vez e reutiliza)
   const soundRef = useRef<Audio.Sound | null>(null);
 
-  // 🔁 Polling
+  // 🔁 Polling de pedidos
   const pollRef = useRef<NodeJS.Timeout | null>(null);
   const isPollingRef = useRef(false);
 
-  // ✅ IDs já vistos (pra não vibrar atrasado / duplicado)
+  // ✅ IDs já vistos
   const seenOrderIdsRef = useRef<Set<string>>(new Set());
+
+  // 🔒 evita loads simultâneos (principal fix do loop)
+  const isLoadingProductsRef = useRef(false);
+  const isLoadingMeRef = useRef(false);
 
   const selectedSoundAsset = useMemo(() => {
     if (settings.soundChoice === 2) {
@@ -124,9 +135,7 @@ export default function HomeScreen() {
       }
 
       await soundRef.current.replayAsync();
-    } catch {
-      // não derruba o app
-    }
+    } catch {}
   }
 
   async function notifyNewOrder() {
@@ -134,21 +143,25 @@ export default function HomeScreen() {
       if (settings.vibrationEnabled) {
         Vibration.vibrate(200);
       }
-
       if (settings.soundEnabled) {
         await playNewOrderSound();
       }
     } catch {}
   }
 
-  async function loadProducts() {
+  async function loadProducts(silent = false) {
+    if (isLoadingProductsRef.current) return;
+    isLoadingProductsRef.current = true;
+
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
+
       const data = await listProducts();
       setProducts(data);
     } catch (err: any) {
       if (err?.response?.status === 402) return;
 
+      // ✅ não prender a tela em loading
       Alert.alert(
         "Erro",
         err?.response?.data?.error ||
@@ -156,15 +169,28 @@ export default function HomeScreen() {
           "Falha ao carregar produtos"
       );
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
+      isLoadingProductsRef.current = false;
     }
   }
 
-  /**
-   * ✅ Busca pedidos, atualiza contador, detecta novos IDs e toca alerta
-   * - primeira carga: marca tudo como visto (não notifica)
-   * - cargas seguintes: notifica somente se chegou ID novo com status NEW
-   */
+  async function loadMe(silent = true) {
+    if (isLoadingMeRef.current) return;
+    isLoadingMeRef.current = true;
+
+    try {
+      const res = await api.get("/me");
+      const name = res.data?.restaurant?.name;
+      if (name) setRestaurantName(String(name));
+      else setRestaurantName(null);
+    } catch (err: any) {
+      if (err?.response?.status === 402) return;
+      setRestaurantName(null);
+    } finally {
+      isLoadingMeRef.current = false;
+    }
+  }
+
   async function loadNewOrdersCount(shouldNotify = false) {
     try {
       const orders = await listOrders();
@@ -175,7 +201,6 @@ export default function HomeScreen() {
       const seen = seenOrderIdsRef.current;
 
       if (!shouldNotify) {
-        // primeira vez: não notificar nada, só marcar como visto
         orders.forEach((o) => seen.add(o.id));
         return;
       }
@@ -193,24 +218,13 @@ export default function HomeScreen() {
   }
 
   async function loadAll() {
-    await Promise.all([loadProducts(), loadNewOrdersCount(false)]);
-  }
-
-  async function loadMe() {
-    try {
-      const res = await api.get("/me");
-      const name = res.data?.restaurant?.name;
-      if (name) setRestaurantName(String(name));
-    } catch (err: any) {
-      if (err?.response?.status === 402) return;
-      setRestaurantName(null);
-    }
+    await Promise.all([loadProducts(false), loadNewOrdersCount(false), loadMe()]);
   }
 
   function showDeleteBusinessError() {
     Alert.alert(
       "Não foi possível excluir",
-      "Este produto já foi usado em pedidos e não pode ser excluído.\n\nDica: desative o produto (Inativo) para ele sumir do cardápio."
+      "Este produto já foi usado em pedidos e não pode ser excluído.\n\nDica: desative o produto para removê-lo do cardápio."
     );
   }
 
@@ -244,7 +258,6 @@ export default function HomeScreen() {
         onPress: async () => {
           try {
             await deleteProduct(id);
-
             setProducts((prev) => prev.filter((p) => p.id !== id));
           } catch (err: any) {
             const status = err?.response?.status;
@@ -261,7 +274,7 @@ export default function HomeScreen() {
                 "Produto não encontrado",
                 "Este produto não existe mais."
               );
-              await loadProducts();
+              await loadProducts(true);
               return;
             }
 
@@ -277,7 +290,7 @@ export default function HomeScreen() {
     ]);
   }
 
-  // ✅ Carrega settings e limpa som no unmount
+  // ✅ settings + cleanup áudio
   useEffect(() => {
     loadSettings();
 
@@ -289,14 +302,24 @@ export default function HomeScreen() {
     };
   }, []);
 
-  // ✅ Primeira carga da tela
+  // ✅ primeira carga
   useEffect(() => {
     loadAll();
-    loadMe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ✅ Polling confiável (sempre)
+  /**
+   * ✅ Atualiza produtos quando voltar pra Home
+   * Importante: SILENT (não trava UI e não entra em loop)
+   */
+  useFocusEffect(
+    useCallback(() => {
+      loadProducts(true);
+      loadMe(true);
+    }, [])
+  );
+
+  // ✅ polling novos pedidos
   useEffect(() => {
     if (pollRef.current) {
       clearInterval(pollRef.current);
@@ -343,10 +366,7 @@ export default function HomeScreen() {
 
       <View style={{ flexDirection: "row", marginBottom: 8 }}>
         <TouchableOpacity
-          onPress={() => {
-            loadAll();
-            loadMe();
-          }}
+          onPress={() => loadAll()}
           style={{
             flex: 1,
             backgroundColor: theme.colors.card2,
@@ -669,7 +689,6 @@ export default function HomeScreen() {
                   flexDirection: "row",
                 }}
               >
-                {/* Thumb */}
                 <View
                   style={{
                     width: 86,
@@ -694,7 +713,6 @@ export default function HomeScreen() {
                   )}
                 </View>
 
-                {/* Conteúdo */}
                 <View style={{ flex: 1, padding: 12 }}>
                   <View style={{ flexDirection: "row", alignItems: "center" }}>
                     <Text
@@ -751,7 +769,7 @@ export default function HomeScreen() {
                     {formatPrice(item.priceCents)}
                   </Text>
 
-                  <View style={{ flexDirection: "row", marginTop: 12 }}>
+                  <View style={{ flexDirection: "row", marginTop: 12, flexWrap: "wrap" }}>
                     <TouchableOpacity
                       onPress={() =>
                         navigation.navigate("EditProduct", { id: item.id })
@@ -764,11 +782,10 @@ export default function HomeScreen() {
                         borderWidth: 1,
                         borderColor: theme.colors.border,
                         marginRight: 10,
+                        marginBottom: 8,
                       }}
                     >
-                      <Text
-                        style={{ color: theme.colors.text, fontWeight: "900" }}
-                      >
+                      <Text style={{ color: theme.colors.text, fontWeight: "900" }}>
                         Editar
                       </Text>
                     </TouchableOpacity>
@@ -789,6 +806,7 @@ export default function HomeScreen() {
                             ? "rgba(51,201,138,0.45)"
                             : "rgba(240,179,91,0.55)",
                         marginRight: 10,
+                        marginBottom: 8,
                       }}
                     >
                       <Text style={{ color: theme.colors.text, fontWeight: "900" }}>
@@ -805,11 +823,10 @@ export default function HomeScreen() {
                         borderRadius: 999,
                         borderWidth: 1,
                         borderColor: "rgba(227,93,106,0.35)",
+                        marginBottom: 8,
                       }}
                     >
-                      <Text
-                        style={{ color: theme.colors.danger, fontWeight: "900" }}
-                      >
+                      <Text style={{ color: theme.colors.danger, fontWeight: "900" }}>
                         Excluir
                       </Text>
                     </TouchableOpacity>
