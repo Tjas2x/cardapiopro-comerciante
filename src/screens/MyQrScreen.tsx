@@ -5,7 +5,6 @@ import {
   StyleSheet,
   TouchableOpacity,
   Alert,
-  Platform,
   Share,
   ActivityIndicator,
 } from "react-native";
@@ -23,7 +22,6 @@ type Restaurant = {
 
 const WEB_URL = "https://cardapiopro-web.vercel.app";
 
-
 export default function MyQrScreen() {
   const [restaurant, setRestaurant] = useState<Restaurant | null>(null);
   const [loading, setLoading] = useState(true);
@@ -40,6 +38,10 @@ export default function MyQrScreen() {
       } catch (e: any) {
         console.log(e);
         if (!alive) return;
+
+        // ✅ Se for 402, o interceptor já bloqueia o app inteiro
+        if (e?.response?.status === 402) return;
+
         Alert.alert("Erro", e?.message || "Falha ao carregar restaurante");
         setRestaurant(null);
       } finally {
@@ -58,7 +60,6 @@ export default function MyQrScreen() {
   const menuUrl = useMemo(() => {
     if (!restaurant?.id) return "";
     return `${WEB_URL}/m/${restaurant.id}`;
-
   }, [restaurant?.id]);
 
   async function copyLink() {
@@ -95,9 +96,7 @@ export default function MyQrScreen() {
     return (
       <View style={styles.container}>
         <Text style={styles.title}>Meu QR Code</Text>
-        <Text style={styles.subtitle}>
-          Não foi possível carregar sua loja.
-        </Text>
+        <Text style={styles.subtitle}>Não foi possível carregar sua loja.</Text>
 
         <View style={styles.qrBox}>
           <Text style={{ fontWeight: "800", color: "#111827" }}>

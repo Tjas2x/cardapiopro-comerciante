@@ -1,7 +1,7 @@
 import React, { createContext, useEffect, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { api } from "../services/api";
-import { setMemoryToken } from "../services/token";
+
+import { api, setAuthToken } from "../services/api";
 
 type AuthContextData = {
   user: any;
@@ -27,10 +27,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (token && storedUser) {
           const cleanToken = String(token || "").trim();
 
-          setMemoryToken(cleanToken);
-          api.defaults.headers.common["Authorization"] = `Bearer ${cleanToken}`;
+          // ✅ único lugar que seta token
+          setAuthToken(cleanToken);
 
           setUser(JSON.parse(storedUser));
+        } else {
+          setAuthToken(null);
+          setUser(null);
         }
       } finally {
         setLoading(false);
@@ -46,19 +49,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const cleanToken = String(token || "").trim();
 
-    // ✅ garante token disponível imediatamente (evita race condition)
-    setMemoryToken(cleanToken);
-
     await AsyncStorage.setItem("@token", cleanToken);
     await AsyncStorage.setItem("@user", JSON.stringify(user));
 
-    api.defaults.headers.common["Authorization"] = `Bearer ${cleanToken}`;
+    // ✅ seta token imediatamente no axios
+    setAuthToken(cleanToken);
+
     setUser(user);
   }
 
   async function signOut() {
-    setMemoryToken(null);
     await AsyncStorage.multiRemove(["@token", "@user"]);
+
+    // ✅ remove token do axios
+    setAuthToken(null);
+
     setUser(null);
   }
 

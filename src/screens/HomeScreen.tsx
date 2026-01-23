@@ -8,23 +8,25 @@ import {
   TouchableOpacity,
   Vibration,
   Switch,
+  Image,
 } from "react-native";
 import { useNavigation } from "@react-navigation/native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Audio } from "expo-av";
 
 import { AuthContext } from "../context/AuthContext";
-import { deleteProduct, listProducts } from "../services/products";
+import {
+  deleteProduct,
+  listProducts,
+  updateProduct,
+  ProductDTO,
+} from "../services/products";
 import { listOrders } from "../services/orders";
 import { theme } from "../theme";
 import { formatBRL } from "../utils/money";
+import { api } from "../services/api";
 
-type Product = {
-  id: string;
-  name: string;
-  description: string | null;
-  priceCents: number;
-};
+type Product = ProductDTO;
 
 type SoundChoice = 1 | 2 | 3;
 
@@ -42,6 +44,14 @@ const defaultSettings: Settings = {
   soundChoice: 1,
 };
 
+function formatPrice(priceCents: number) {
+  try {
+    return formatBRL(priceCents);
+  } catch {
+    return `R$ ${(priceCents / 100).toFixed(2)}`;
+  }
+}
+
 export default function HomeScreen() {
   const navigation = useNavigation<any>();
   const { user, signOut } = useContext(AuthContext);
@@ -50,14 +60,21 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(true);
 
   const [newOrdersCount, setNewOrdersCount] = useState(0);
-  const prevNewOrdersCountRef = useRef<number | null>(null);
 
   const [settings, setSettings] = useState<Settings>(defaultSettings);
-
-  // ✅ painel recolhível
   const [showAlertsSettings, setShowAlertsSettings] = useState(false);
 
+  const [restaurantName, setRestaurantName] = useState<string | null>(null);
+
+  // 🔊 Som (carrega 1 vez e reutiliza)
   const soundRef = useRef<Audio.Sound | null>(null);
+
+  // 🔁 Polling
+  const pollRef = useRef<NodeJS.Timeout | null>(null);
+  const isPollingRef = useRef(false);
+
+  // ✅ IDs já vistos (pra não vibrar atrasado / duplicado)
+  const seenOrderIdsRef = useRef<Set<string>>(new Set());
 
   const selectedSoundAsset = useMemo(() => {
     if (settings.soundChoice === 2) {
@@ -79,52 +96,49 @@ export default function HomeScreen() {
         ...prev,
         ...parsed,
       }));
-    } catch {
-      // ignora
-    }
+    } catch {}
   }
 
   async function saveSettings(next: Settings) {
     setSettings(next);
     try {
       await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
-    } catch {
-      // ignora
-    }
+    } catch {}
   }
 
   async function playNewOrderSound() {
     if (!settings.soundEnabled) return;
 
     try {
-      if (soundRef.current) {
-        await soundRef.current.unloadAsync();
-        soundRef.current = null;
-      }
-
       await Audio.setAudioModeAsync({
         playsInSilentModeIOS: true,
         staysActiveInBackground: false,
-        shouldDuckAndroid: true,
+        shouldDuckAndroid: false,
       });
 
-      const { sound } = await Audio.Sound.createAsync(selectedSoundAsset, {
-        shouldPlay: true,
-      });
+      if (!soundRef.current) {
+        const { sound } = await Audio.Sound.createAsync(selectedSoundAsset, {
+          shouldPlay: false,
+        });
+        soundRef.current = sound;
+      }
 
-      soundRef.current = sound;
+      await soundRef.current.replayAsync();
     } catch {
-      // não quebra nada se falhar
+      // não derruba o app
     }
   }
 
   async function notifyNewOrder() {
-    if (settings.vibrationEnabled) {
-      Vibration.vibrate(200);
-    }
-    if (settings.soundEnabled) {
-      await playNewOrderSound();
-    }
+    try {
+      if (settings.vibrationEnabled) {
+        Vibration.vibrate(200);
+      }
+
+      if (settings.soundEnabled) {
+        await playNewOrderSound();
+      }
+    } catch {}
   }
 
   async function loadProducts() {
@@ -133,34 +147,92 @@ export default function HomeScreen() {
       const data = await listProducts();
       setProducts(data);
     } catch (err: any) {
-      Alert.alert("Erro", err?.message || "Falha ao carregar produtos");
+      if (err?.response?.status === 402) return;
+
+      Alert.alert(
+        "Erro",
+        err?.response?.data?.error ||
+          err?.message ||
+          "Falha ao carregar produtos"
+      );
     } finally {
       setLoading(false);
     }
   }
 
+  /**
+   * ✅ Busca pedidos, atualiza contador, detecta novos IDs e toca alerta
+   * - primeira carga: marca tudo como visto (não notifica)
+   * - cargas seguintes: notifica somente se chegou ID novo com status NEW
+   */
   async function loadNewOrdersCount(shouldNotify = false) {
     try {
       const orders = await listOrders();
-      const count = orders.filter((o) => o.status === "NEW").length;
 
-      if (shouldNotify) {
-        const prev = prevNewOrdersCountRef.current;
-        if (prev !== null && count > prev) {
-          await notifyNewOrder();
-        }
+      const count = orders.filter((o) => o.status === "NEW").length;
+      setNewOrdersCount(count);
+
+      const seen = seenOrderIdsRef.current;
+
+      if (!shouldNotify) {
+        // primeira vez: não notificar nada, só marcar como visto
+        orders.forEach((o) => seen.add(o.id));
+        return;
       }
 
-      prevNewOrdersCountRef.current = count;
-      setNewOrdersCount(count);
+      const newOnes = orders.filter((o) => !seen.has(o.id));
+      newOnes.forEach((o) => seen.add(o.id));
+
+      const hasNewOrder = newOnes.some((o) => o.status === "NEW");
+      if (hasNewOrder) {
+        await notifyNewOrder();
+      }
     } catch {
-      prevNewOrdersCountRef.current = 0;
       setNewOrdersCount(0);
     }
   }
 
   async function loadAll() {
     await Promise.all([loadProducts(), loadNewOrdersCount(false)]);
+  }
+
+  async function loadMe() {
+    try {
+      const res = await api.get("/me");
+      const name = res.data?.restaurant?.name;
+      if (name) setRestaurantName(String(name));
+    } catch (err: any) {
+      if (err?.response?.status === 402) return;
+      setRestaurantName(null);
+    }
+  }
+
+  function showDeleteBusinessError() {
+    Alert.alert(
+      "Não foi possível excluir",
+      "Este produto já foi usado em pedidos e não pode ser excluído.\n\nDica: desative o produto (Inativo) para ele sumir do cardápio."
+    );
+  }
+
+  async function onToggleActive(item: Product) {
+    try {
+      const nextActive = !item.active;
+
+      await updateProduct(item.id, { active: nextActive });
+
+      setProducts((prev) =>
+        prev.map((p) => (p.id === item.id ? { ...p, active: nextActive } : p))
+      );
+    } catch (err: any) {
+      if (err?.response?.status === 402) return;
+
+      Alert.alert(
+        "Erro",
+        err?.response?.data?.error ||
+          err?.message ||
+          "Falha ao alterar status do produto"
+      );
+    }
   }
 
   async function onDelete(id: string) {
@@ -172,52 +244,87 @@ export default function HomeScreen() {
         onPress: async () => {
           try {
             await deleteProduct(id);
-            loadProducts();
+
+            setProducts((prev) => prev.filter((p) => p.id !== id));
           } catch (err: any) {
-            Alert.alert("Erro", err?.message || "Falha ao excluir produto");
+            const status = err?.response?.status;
+
+            if (status === 402) return;
+
+            if (status === 409) {
+              showDeleteBusinessError();
+              return;
+            }
+
+            if (status === 404) {
+              Alert.alert(
+                "Produto não encontrado",
+                "Este produto não existe mais."
+              );
+              await loadProducts();
+              return;
+            }
+
+            Alert.alert(
+              "Erro",
+              err?.response?.data?.error ||
+                err?.message ||
+                "Falha ao excluir produto"
+            );
           }
         },
       },
     ]);
   }
 
+  // ✅ Carrega settings e limpa som no unmount
   useEffect(() => {
     loadSettings();
 
     return () => {
       if (soundRef.current) {
-        soundRef.current.unloadAsync();
+        soundRef.current.unloadAsync().catch(() => {});
         soundRef.current = null;
       }
     };
   }, []);
 
+  // ✅ Primeira carga da tela
   useEffect(() => {
-    let timer: any;
+    loadAll();
+    loadMe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    const unsubFocus = navigation.addListener("focus", () => {
-      loadAll();
+  // ✅ Polling confiável (sempre)
+  useEffect(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
 
-      timer = setInterval(() => {
-        loadNewOrdersCount(true);
-      }, 5000);
-    });
+    pollRef.current = setInterval(() => {
+      if (isPollingRef.current) return;
+      isPollingRef.current = true;
 
-    const unsubBlur = navigation.addListener("blur", () => {
-      if (timer) clearInterval(timer);
-    });
+      loadNewOrdersCount(true)
+        .catch(() => {})
+        .finally(() => {
+          isPollingRef.current = false;
+        });
+    }, 5000);
 
     return () => {
-      if (timer) clearInterval(timer);
-      unsubFocus();
-      unsubBlur();
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [navigation, settings.soundEnabled, settings.vibrationEnabled, settings.soundChoice]);
+  }, [settings.soundEnabled, settings.vibrationEnabled, settings.soundChoice]);
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.colors.bg, padding: 14 }}>
-      {/* Header (mais compacto) */}
       <View style={{ marginBottom: 8 }}>
         <Text
           style={{
@@ -230,14 +337,16 @@ export default function HomeScreen() {
         </Text>
 
         <Text style={{ color: theme.colors.muted, marginTop: 2 }}>
-          {user?.email}
+          {restaurantName ?? user?.email}
         </Text>
       </View>
 
-      {/* Atualizar / Sair (compacto) */}
       <View style={{ flexDirection: "row", marginBottom: 8 }}>
         <TouchableOpacity
-          onPress={loadAll}
+          onPress={() => {
+            loadAll();
+            loadMe();
+          }}
           style={{
             flex: 1,
             backgroundColor: theme.colors.card2,
@@ -282,7 +391,6 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Avisos (compacto + expande/recolhe) */}
       <View
         style={{
           backgroundColor: theme.colors.card,
@@ -299,9 +407,16 @@ export default function HomeScreen() {
               🔔 Avisos de novos pedidos
             </Text>
 
-            <Text style={{ color: theme.colors.muted, marginTop: 2, fontSize: 12 }}>
+            <Text
+              style={{
+                color: theme.colors.muted,
+                marginTop: 2,
+                fontSize: 12,
+              }}
+            >
               Som: {settings.soundEnabled ? "ON" : "OFF"} • Vibração:{" "}
-              {settings.vibrationEnabled ? "ON" : "OFF"} • Som {settings.soundChoice}
+              {settings.vibrationEnabled ? "ON" : "OFF"} • Som{" "}
+              {settings.soundChoice}
             </Text>
           </View>
 
@@ -324,15 +439,29 @@ export default function HomeScreen() {
 
         {showAlertsSettings && (
           <View style={{ marginTop: 10 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                marginBottom: 8,
+              }}
+            >
               <Text style={{ color: theme.colors.muted, flex: 1 }}>Som</Text>
               <Switch
                 value={settings.soundEnabled}
-                onValueChange={(v) => saveSettings({ ...settings, soundEnabled: v })}
+                onValueChange={(v) =>
+                  saveSettings({ ...settings, soundEnabled: v })
+                }
               />
             </View>
 
-            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                marginBottom: 8,
+              }}
+            >
               <Text style={{ color: theme.colors.muted, flex: 1 }}>Vibração</Text>
               <Switch
                 value={settings.vibrationEnabled}
@@ -349,15 +478,22 @@ export default function HomeScreen() {
                   <TouchableOpacity
                     key={n}
                     onPress={() =>
-                      saveSettings({ ...settings, soundChoice: n as SoundChoice })
+                      saveSettings({
+                        ...settings,
+                        soundChoice: n as SoundChoice,
+                      })
                     }
                     style={{
                       flex: 1,
-                      backgroundColor: active ? theme.colors.primary : theme.colors.card2,
+                      backgroundColor: active
+                        ? theme.colors.primary
+                        : theme.colors.card2,
                       paddingVertical: 9,
                       borderRadius: 999,
                       borderWidth: 1,
-                      borderColor: active ? "rgba(0,0,0,0.08)" : theme.colors.border,
+                      borderColor: active
+                        ? "rgba(0,0,0,0.08)"
+                        : theme.colors.border,
                     }}
                   >
                     <Text
@@ -403,7 +539,6 @@ export default function HomeScreen() {
         )}
       </View>
 
-      {/* Ver Pedidos */}
       <TouchableOpacity
         onPress={() => navigation.navigate("Orders")}
         style={{
@@ -416,9 +551,7 @@ export default function HomeScreen() {
           alignItems: "center",
         }}
       >
-        <Text style={{ color: "#071018", fontWeight: "900" }}>
-          Ver Pedidos
-        </Text>
+        <Text style={{ color: "#071018", fontWeight: "900" }}>Ver Pedidos</Text>
 
         {newOrdersCount > 0 && (
           <View
@@ -439,7 +572,6 @@ export default function HomeScreen() {
         )}
       </TouchableOpacity>
 
-      {/* Novo Produto */}
       <TouchableOpacity
         onPress={() => navigation.navigate("CreateProduct")}
         style={{
@@ -462,7 +594,6 @@ export default function HomeScreen() {
         </Text>
       </TouchableOpacity>
 
-      {/* Meu QR Code */}
       <TouchableOpacity
         onPress={() => navigation.navigate("MyQr")}
         style={{
@@ -485,7 +616,6 @@ export default function HomeScreen() {
         </Text>
       </TouchableOpacity>
 
-      {/* Título */}
       <View
         style={{
           flexDirection: "row",
@@ -503,10 +633,11 @@ export default function HomeScreen() {
         >
           Produtos
         </Text>
-        <Text style={{ color: theme.colors.muted }}>{products.length} item(s)</Text>
+        <Text style={{ color: theme.colors.muted }}>
+          {products.length} item(s)
+        </Text>
       </View>
 
-      {/* Lista */}
       {loading ? (
         <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
           <ActivityIndicator />
@@ -523,71 +654,170 @@ export default function HomeScreen() {
               Nenhum produto encontrado.
             </Text>
           }
-          renderItem={({ item }) => (
-            <View
-              style={{
-                backgroundColor: theme.colors.card,
-                padding: 12,
-                borderRadius: theme.radius.lg,
-                borderWidth: 1,
-                borderColor: theme.colors.border,
-                marginBottom: 10,
-              }}
-            >
-              <Text
+          renderItem={({ item }) => {
+            const hasImage = Boolean(item.imageUrl);
+
+            return (
+              <View
                 style={{
-                  color: theme.colors.text,
-                  fontWeight: "900",
-                  fontSize: 16,
+                  backgroundColor: theme.colors.card,
+                  borderRadius: theme.radius.lg,
+                  borderWidth: 1,
+                  borderColor: theme.colors.border,
+                  marginBottom: 10,
+                  overflow: "hidden",
+                  flexDirection: "row",
                 }}
               >
-                {item.name}
-              </Text>
-
-              <Text style={{ color: theme.colors.muted, marginTop: 4 }}>
-                {item.description || "Sem descrição"}
-              </Text>
-
-              <Text style={{ color: theme.colors.text, marginTop: 10, fontWeight: "900" }}>
-                {formatBRL(item.priceCents)}
-              </Text>
-
-              <View style={{ flexDirection: "row", marginTop: 12 }}>
-                <TouchableOpacity
-                  onPress={() => navigation.navigate("EditProduct", { id: item.id })}
+                {/* Thumb */}
+                <View
                   style={{
+                    width: 86,
+                    height: 86,
                     backgroundColor: theme.colors.card2,
-                    paddingVertical: 8,
-                    paddingHorizontal: 12,
-                    borderRadius: 999,
-                    borderWidth: 1,
-                    borderColor: theme.colors.border,
-                    marginRight: 10,
+                    borderRightWidth: 1,
+                    borderRightColor: theme.colors.border,
+                    alignItems: "center",
+                    justifyContent: "center",
                   }}
                 >
-                  <Text style={{ color: theme.colors.text, fontWeight: "900" }}>
-                    Editar
-                  </Text>
-                </TouchableOpacity>
+                  {hasImage ? (
+                    <Image
+                      source={{ uri: String(item.imageUrl) }}
+                      style={{ width: 86, height: 86 }}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <Text style={{ color: theme.colors.muted, fontWeight: "900" }}>
+                      Sem{"\n"}foto
+                    </Text>
+                  )}
+                </View>
 
-                <TouchableOpacity
-                  onPress={() => onDelete(item.id)}
-                  style={{
-                    backgroundColor: "rgba(227,93,106,0.12)",
-                    paddingVertical: 8,
-                    paddingHorizontal: 12,
-                    borderRadius: 999,
-                    borderWidth: 1,
-                    borderColor: "rgba(227,93,106,0.35)",
-                  }}
-                >
-                  <Text style={{ color: theme.colors.danger, fontWeight: "900" }}>
-                    Excluir
+                {/* Conteúdo */}
+                <View style={{ flex: 1, padding: 12 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center" }}>
+                    <Text
+                      style={{
+                        color: theme.colors.text,
+                        fontWeight: "900",
+                        fontSize: 16,
+                        flex: 1,
+                      }}
+                      numberOfLines={1}
+                    >
+                      {item.name}
+                    </Text>
+
+                    {item.active === false && (
+                      <View
+                        style={{
+                          marginLeft: 8,
+                          backgroundColor: "rgba(227,93,106,0.12)",
+                          borderWidth: 1,
+                          borderColor: "rgba(227,93,106,0.35)",
+                          paddingHorizontal: 8,
+                          paddingVertical: 3,
+                          borderRadius: 999,
+                        }}
+                      >
+                        <Text
+                          style={{
+                            color: theme.colors.danger,
+                            fontWeight: "900",
+                            fontSize: 11,
+                          }}
+                        >
+                          Inativo
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+
+                  <Text
+                    style={{ color: theme.colors.muted, marginTop: 4 }}
+                    numberOfLines={2}
+                  >
+                    {item.description || "Sem descrição"}
                   </Text>
-                </TouchableOpacity>
+
+                  <Text
+                    style={{
+                      color: theme.colors.text,
+                      marginTop: 8,
+                      fontWeight: "900",
+                    }}
+                  >
+                    {formatPrice(item.priceCents)}
+                  </Text>
+
+                  <View style={{ flexDirection: "row", marginTop: 12 }}>
+                    <TouchableOpacity
+                      onPress={() =>
+                        navigation.navigate("EditProduct", { id: item.id })
+                      }
+                      style={{
+                        backgroundColor: theme.colors.card2,
+                        paddingVertical: 8,
+                        paddingHorizontal: 12,
+                        borderRadius: 999,
+                        borderWidth: 1,
+                        borderColor: theme.colors.border,
+                        marginRight: 10,
+                      }}
+                    >
+                      <Text
+                        style={{ color: theme.colors.text, fontWeight: "900" }}
+                      >
+                        Editar
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      onPress={() => onToggleActive(item)}
+                      style={{
+                        backgroundColor:
+                          item.active === false
+                            ? "rgba(51,201,138,0.14)"
+                            : "rgba(240,179,91,0.16)",
+                        paddingVertical: 8,
+                        paddingHorizontal: 12,
+                        borderRadius: 999,
+                        borderWidth: 1,
+                        borderColor:
+                          item.active === false
+                            ? "rgba(51,201,138,0.45)"
+                            : "rgba(240,179,91,0.55)",
+                        marginRight: 10,
+                      }}
+                    >
+                      <Text style={{ color: theme.colors.text, fontWeight: "900" }}>
+                        {item.active === false ? "Ativar" : "Desativar"}
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      onPress={() => onDelete(item.id)}
+                      style={{
+                        backgroundColor: "rgba(227,93,106,0.12)",
+                        paddingVertical: 8,
+                        paddingHorizontal: 12,
+                        borderRadius: 999,
+                        borderWidth: 1,
+                        borderColor: "rgba(227,93,106,0.35)",
+                      }}
+                    >
+                      <Text
+                        style={{ color: theme.colors.danger, fontWeight: "900" }}
+                      >
+                        Excluir
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
               </View>
-            </View>
-          )}
+            );
+          }}
         />
       )}
     </View>
