@@ -7,6 +7,8 @@ export type OrderStatus =
   | "DELIVERED"
   | "CANCELED";
 
+export type PaymentMethod = "PIX" | "CARD_CREDIT" | "CARD_DEBIT" | "CASH";
+
 export type OrderItem = {
   id: string;
   productId: string;
@@ -24,6 +26,11 @@ export type Order = {
   totalCents: number;
   createdAt: string;
   items: OrderItem[];
+
+  // ✅ NOVOS CAMPOS (pagamento)
+  paymentMethod: PaymentMethod | null;
+  cashChangeForCents: number | null;
+  paid: boolean | null;
 };
 
 export async function listOrders(): Promise<Order[]> {

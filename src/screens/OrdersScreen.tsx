@@ -83,6 +83,33 @@ function statusPillStyle(s: OrderStatus) {
   };
 }
 
+function paymentLabel(pm: string | null | undefined) {
+  if (!pm) return "—";
+  if (pm === "PIX") return "PIX";
+  if (pm === "CARD_CREDIT") return "Cartão (Crédito)";
+  if (pm === "CARD_DEBIT") return "Cartão (Débito)";
+  if (pm === "CASH") return "Dinheiro";
+  return pm;
+}
+
+// ✅ define o "próximo status" para o botão grande
+function getNextStatus(current: OrderStatus): OrderStatus | null {
+  if (current === "NEW") return "PREPARING";
+  if (current === "PREPARING") return "OUT_FOR_DELIVERY";
+  if (current === "OUT_FOR_DELIVERY") return "DELIVERED";
+  return null;
+}
+
+function nextStatusLabel(current: OrderStatus) {
+  const next = getNextStatus(current);
+  if (!next) return null;
+
+  if (next === "PREPARING") return "Preparando";
+  if (next === "OUT_FOR_DELIVERY") return "Saiu para entrega";
+  if (next === "DELIVERED") return "Entregue";
+  return statusLabel(next);
+}
+
 export default function OrdersScreen() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
@@ -101,15 +128,12 @@ export default function OrdersScreen() {
   // 🔔 controlar alerta de "novo pedido"
   const seenOrderIdsRef = useRef<Set<string>>(new Set());
   const soundRef = useRef<Audio.Sound | null>(null);
-  const soundEnabledRef = useRef(true); // se você tiver toggle no app, ligue nisso aqui
+  const soundEnabledRef = useRef(true);
 
   async function ensureSoundLoaded() {
     try {
       if (soundRef.current) return;
 
-      // Se você quiser um som personalizado, coloque um mp3 em:
-      // /assets/sounds/new-order.mp3
-      // e troque o require abaixo.
       const { sound } = await Audio.Sound.createAsync(
         require("../assets/sounds/new-order.mp3"),
         { shouldPlay: false }
@@ -117,14 +141,13 @@ export default function OrdersScreen() {
 
       soundRef.current = sound;
 
-      // Permite tocar som mesmo em modo silencioso (iOS)
       await Audio.setAudioModeAsync({
         playsInSilentModeIOS: true,
         staysActiveInBackground: false,
         shouldDuckAndroid: false,
       });
     } catch {
-      // se falhar o áudio, segue vida (sem crash)
+      // sem crash
     }
   }
 
@@ -134,7 +157,6 @@ export default function OrdersScreen() {
     try {
       await ensureSoundLoaded();
 
-      // vibração curta
       Vibration.vibrate(180);
 
       if (soundRef.current) {
@@ -161,13 +183,11 @@ export default function OrdersScreen() {
   }
 
   function detectNewOrders(nextOrders: Order[]) {
-    // Detecta apenas os pedidos que chegaram agora (IDs que não existiam antes)
     const seen = seenOrderIdsRef.current;
 
     const newOnes = nextOrders.filter((o) => !seen.has(o.id));
     newOnes.forEach((o) => seen.add(o.id));
 
-    // toca apenas se chegou algum pedido novo com status NEW
     const hasNew = newOnes.some((o) => o.status === "NEW");
 
     if (hasNew) {
@@ -184,13 +204,13 @@ export default function OrdersScreen() {
 
       const data = await listOrders();
 
-      // 🔔 alerta apenas se realmente chegou pedido novo
       detectNewOrders(data);
 
       setOrders(data);
       setLastSyncAt(new Date());
     } catch (err: any) {
       if (err?.response?.status === 402) return;
+
       Alert.alert("Erro", err?.message || "Falha ao carregar pedidos");
     } finally {
       if (!silent) setLoading(false);
@@ -204,6 +224,7 @@ export default function OrdersScreen() {
       await load(true);
     } catch (err: any) {
       if (err?.response?.status === 402) return;
+
       Alert.alert("Erro", err?.message || "Falha ao atualizar status");
     }
   }
@@ -217,7 +238,6 @@ export default function OrdersScreen() {
   // ✅ polling só enquanto tela estiver em foco
   useFocusEffect(
     useCallback(() => {
-      // força sync quando entrar na tela
       load(true);
 
       if (autoRefresh) startPolling();
@@ -401,6 +421,9 @@ export default function OrdersScreen() {
         renderItem={({ item }) => {
           const pill = statusPillStyle(item.status);
 
+          const next = getNextStatus(item.status);
+          const nextLabel = nextStatusLabel(item.status);
+
           return (
             <View
               style={{
@@ -451,6 +474,15 @@ export default function OrdersScreen() {
                 Endereço: {item.deliveryAddress || "—"}
               </Text>
 
+              {/* ✅ PAGAMENTO + TROCO */}
+              <Text style={{ color: theme.colors.muted, marginTop: 2 }}>
+                Pagamento: {paymentLabel((item as any)?.paymentMethod)}
+                {(item as any)?.paymentMethod === "CASH" &&
+                (item as any)?.cashChangeForCents
+                  ? ` • Troco: ${formatBRL((item as any).cashChangeForCents)}`
+                  : ""}
+              </Text>
+
               <Text
                 style={{
                   color: theme.colors.text,
@@ -480,6 +512,32 @@ export default function OrdersScreen() {
                 ))}
               </View>
 
+              {/* ✅ Botão grande de avanço (super claro) */}
+              {next && nextLabel ? (
+                <TouchableOpacity
+                  onPress={() => setStatus(item.id, next)}
+                  style={{
+                    marginTop: 14,
+                    backgroundColor: theme.colors.primary,
+                    paddingVertical: 14,
+                    borderRadius: theme.radius.lg,
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: "#071018",
+                      fontWeight: "900",
+                      fontSize: 15,
+                    }}
+                  >
+                    Avançar status ➜ {nextLabel}
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
+
+              {/* Botões manuais (mantém seu fluxo) */}
               <View
                 style={{ flexDirection: "row", flexWrap: "wrap", marginTop: 12 }}
               >
