@@ -200,15 +200,15 @@ const daysLeft = useMemo(
   try {
     const res = await api.get("/me");
 
-    const name = res.data?.restaurant?.name;
-    if (name) setRestaurantName(String(name));
-    else setRestaurantName(null);
+const name = res.data?.restaurant?.name;
+if (name) setRestaurantName(String(name));
+else setRestaurantName(null);
 
-    // ====== NOVO BLOCO (TRIAL / ASSINATURA) ======
-    const sub = res.data?.subscription;
-    setSubscriptionStatus(sub?.status ?? null);
-    setTrialEndsAt(sub?.trialEndsAt ?? null);
-    // =============================================
+// ====== NOVO BLOCO (TRIAL / ASSINATURA) ======
+const sub = res.data?.restaurant?.subscription;
+setSubscriptionStatus(sub?.status ?? null);
+setTrialEndsAt(sub?.trialEndsAt ?? null);
+// =============================================
 
   } catch (err: any) {
     if (err?.response?.status === 402) return;
@@ -428,11 +428,12 @@ const daysLeft = useMemo(
       <Text
         style={{
           color: theme.colors.text,
-          fontSize: 22,
+          fontSize: 24,
           fontWeight: "900",
+          letterSpacing: 0.3,
         }}
       >
-        Painel do Comerciante
+       Painel do Comerciante
       </Text>
 
       <Text style={{ color: theme.colors.muted, marginTop: 2 }}>
@@ -443,53 +444,61 @@ const daysLeft = useMemo(
     </View>
 
     <View style={{ flexDirection: "row", marginBottom: 8 }}>
+      <TouchableOpacity
+        onPress={() => loadAll()}
+        style={{
+          flex: 1,
+          backgroundColor: theme.colors.card2,
+          paddingVertical: 10,
+          borderRadius: theme.radius.lg,
+          borderWidth: 1,
+          borderColor: theme.colors.border,
+          marginRight: 10,
 
-
-        <TouchableOpacity
-          onPress={() => loadAll()}
+          shadowColor: "#000",
+          shadowOpacity: 0.15,
+          shadowRadius: 6,
+          elevation: 3,
+        }}
+      >
+        <Text
           style={{
-            flex: 1,
-            backgroundColor: theme.colors.card2,
-            paddingVertical: 10,
-            borderRadius: theme.radius.lg,
-            borderWidth: 1,
-            borderColor: theme.colors.border,
-            marginRight: 10,
+            color: theme.colors.text,
+            textAlign: "center",
+            fontWeight: "900",
           }}
         >
-          <Text
-            style={{
-              color: theme.colors.text,
-              textAlign: "center",
-              fontWeight: "900",
-            }}
-          >
-            Atualizar
-          </Text>
-        </TouchableOpacity>
+          Atualizar
+        </Text>
+      </TouchableOpacity>
 
-        <TouchableOpacity
-          onPress={signOut}
+      <TouchableOpacity
+        onPress={signOut}
+        style={{
+          flex: 1,
+          backgroundColor: theme.colors.card2,
+          paddingVertical: 10,
+          borderRadius: theme.radius.lg,
+          borderWidth: 1,
+          borderColor: "rgba(227,93,106,0.55)",
+
+          shadowColor: "#000",
+          shadowOpacity: 0.15,
+          shadowRadius: 6,
+          elevation: 3,
+        }}
+      >
+        <Text
           style={{
-            flex: 1,
-            backgroundColor: theme.colors.card2,
-            paddingVertical: 10,
-            borderRadius: theme.radius.lg,
-            borderWidth: 1,
-            borderColor: "rgba(227,93,106,0.55)",
+            color: theme.colors.danger,
+            textAlign: "center",
+            fontWeight: "900",
           }}
         >
-          <Text
-            style={{
-              color: theme.colors.danger,
-              textAlign: "center",
-              fontWeight: "900",
-            }}
-          >
-            Sair
-          </Text>
-        </TouchableOpacity>
-      </View>
+          Sair
+        </Text>
+      </TouchableOpacity>
+    </View>
 
       <View
         style={{
@@ -920,3 +929,5 @@ const daysLeft = useMemo(
     </View>
   );
 }
+
+
