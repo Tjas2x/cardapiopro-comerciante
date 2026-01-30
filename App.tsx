@@ -9,6 +9,7 @@ import HomeScreen from "./src/screens/HomeScreen";
 import CreateProductScreen from "./src/screens/CreateProductScreen";
 import EditProductScreen from "./src/screens/EditProductScreen";
 import SubscriptionBlockedScreen from "./src/screens/SubscriptionBlockedScreen";
+import RegisterMerchantScreen from "./src/screens/RegisterMerchantScreen"; // NOVO
 
 import { AuthProvider, AuthContext } from "./src/context/AuthContext";
 
@@ -31,10 +32,14 @@ function Routes() {
 
   if (loading) return null;
 
+  // 🔒 Assinatura bloqueada
   if (user && blocked) {
     return (
       <Stack.Navigator screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="SubscriptionBlocked" component={SubscriptionBlockedScreen} />
+        <Stack.Screen
+          name="SubscriptionBlocked"
+          component={SubscriptionBlockedScreen}
+        />
       </Stack.Navigator>
     );
   }
@@ -42,6 +47,7 @@ function Routes() {
   return (
     <Stack.Navigator>
       {user ? (
+        // ===== LOGADO =====
         <>
           <Stack.Screen
             name="Home"
@@ -74,11 +80,20 @@ function Routes() {
           />
         </>
       ) : (
-        <Stack.Screen
-          name="Login"
-          component={LoginScreen}
-          options={{ headerShown: false }}
-        />
+        // ===== NÃO LOGADO =====
+        <>
+          <Stack.Screen
+            name="Login"
+            component={LoginScreen}
+            options={{ headerShown: false }}
+          />
+
+          <Stack.Screen
+            name="RegisterMerchant"
+            component={RegisterMerchantScreen}
+            options={{ title: "Criar Conta" }}
+          />
+        </>
       )}
     </Stack.Navigator>
   );

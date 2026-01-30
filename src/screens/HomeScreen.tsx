@@ -59,6 +59,16 @@ function formatPrice(priceCents: number) {
   }
 }
 
+function calcDaysLeft(dateIso?: string | null) {
+  if (!dateIso) return 0;
+  const end = new Date(dateIso).getTime();
+  const now = Date.now();
+  const diff = end - now;
+  if (diff <= 0) return 0;
+  return Math.ceil(diff / (1000 * 60 * 60 * 24));
+}
+
+
 export default function HomeScreen() {
   const navigation = useNavigation<any>();
   const { user, signOut } = useContext(AuthContext);
@@ -72,6 +82,15 @@ export default function HomeScreen() {
   const [showAlertsSettings, setShowAlertsSettings] = useState(false);
 
   const [restaurantName, setRestaurantName] = useState<string | null>(null);
+  const [subscriptionStatus, setSubscriptionStatus] =
+  useState<"TRIAL" | "ACTIVE" | "EXPIRED" | null>(null);
+
+const [trialEndsAt, setTrialEndsAt] = useState<string | null>(null);
+
+const daysLeft = useMemo(
+  () => calcDaysLeft(trialEndsAt),
+  [trialEndsAt]
+);
 
   // 🔊 Som (carrega 1 vez e reutiliza)
   const soundRef = useRef<Audio.Sound | null>(null);
@@ -174,22 +193,36 @@ export default function HomeScreen() {
     }
   }
 
-  async function loadMe(silent = true) {
-    if (isLoadingMeRef.current) return;
-    isLoadingMeRef.current = true;
+ async function loadMe(silent = true) {
+  if (isLoadingMeRef.current) return;
+  isLoadingMeRef.current = true;
 
-    try {
-      const res = await api.get("/me");
-      const name = res.data?.restaurant?.name;
-      if (name) setRestaurantName(String(name));
-      else setRestaurantName(null);
-    } catch (err: any) {
-      if (err?.response?.status === 402) return;
-      setRestaurantName(null);
-    } finally {
-      isLoadingMeRef.current = false;
-    }
+  try {
+    const res = await api.get("/me");
+
+    const name = res.data?.restaurant?.name;
+    if (name) setRestaurantName(String(name));
+    else setRestaurantName(null);
+
+    // ====== NOVO BLOCO (TRIAL / ASSINATURA) ======
+    const sub = res.data?.subscription;
+    setSubscriptionStatus(sub?.status ?? null);
+    setTrialEndsAt(sub?.trialEndsAt ?? null);
+    // =============================================
+
+  } catch (err: any) {
+    if (err?.response?.status === 402) return;
+
+    setRestaurantName(null);
+
+    // opcional mas recomendado:
+    setSubscriptionStatus(null);
+    setTrialEndsAt(null);
+
+  } finally {
+    isLoadingMeRef.current = false;
   }
+}
 
   async function loadNewOrdersCount(shouldNotify = false) {
     try {
@@ -346,25 +379,72 @@ export default function HomeScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.soundEnabled, settings.vibrationEnabled, settings.soundChoice]);
 
+  function renderSubscriptionBar() {
+  if (!subscriptionStatus) return null;
+
+  let bg = "#2f855a";
+  let text = "Assinatura ativa";
+
+  if (subscriptionStatus === "TRIAL") {
+    bg = "#6b46c1";
+    text =
+      daysLeft > 0
+        ? `Período de teste • ${daysLeft} dia(s) restante(s)`
+        : "Período de teste expirado";
+  }
+
+  if (subscriptionStatus === "EXPIRED") {
+    bg = "#c53030";
+    text = "Assinatura expirada";
+  }
+
   return (
-    <View style={{ flex: 1, backgroundColor: theme.colors.bg, padding: 14 }}>
-      <View style={{ marginBottom: 8 }}>
-        <Text
-          style={{
-            color: theme.colors.text,
-            fontSize: 22,
-            fontWeight: "900",
-          }}
-        >
-          Painel do Comerciante
-        </Text>
+    <View
+      style={{
+        marginTop: 6,
+        backgroundColor: bg,
+        paddingVertical: 6,
+        borderRadius: 8,
+      }}
+    >
+      <Text
+        style={{
+          color: "#fff",
+          fontWeight: "900",
+          fontSize: 12,
+          textAlign: "center",
+        }}
+      >
+        {text}
+      </Text>
+    </View>
+  );
+}
 
-        <Text style={{ color: theme.colors.muted, marginTop: 2 }}>
-          {restaurantName ?? user?.email}
-        </Text>
-      </View>
 
-      <View style={{ flexDirection: "row", marginBottom: 8 }}>
+  return (
+  <View style={{ flex: 1, backgroundColor: theme.colors.bg, padding: 14 }}>
+    <View style={{ marginBottom: 8 }}>
+      <Text
+        style={{
+          color: theme.colors.text,
+          fontSize: 22,
+          fontWeight: "900",
+        }}
+      >
+        Painel do Comerciante
+      </Text>
+
+      <Text style={{ color: theme.colors.muted, marginTop: 2 }}>
+        {restaurantName ?? user?.email}
+      </Text>
+
+      {renderSubscriptionBar()}
+    </View>
+
+    <View style={{ flexDirection: "row", marginBottom: 8 }}>
+
+
         <TouchableOpacity
           onPress={() => loadAll()}
           style={{

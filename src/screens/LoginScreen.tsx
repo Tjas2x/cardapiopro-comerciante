@@ -1,8 +1,8 @@
 import React, { useContext, useState } from "react";
-import { View, Text, TextInput, Button, Alert } from "react-native";
+import { View, Text, TextInput, Button, Alert, TouchableOpacity } from "react-native";
 import { AuthContext } from "../context/AuthContext";
 
-export default function LoginScreen() {
+export default function LoginScreen({ navigation }: any) {
   const { signIn } = useContext(AuthContext);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -34,6 +34,16 @@ export default function LoginScreen() {
       />
 
       <Button title="Entrar" onPress={handleLogin} />
+
+      {/* ===== NOVO BOTÃO ===== */}
+      <TouchableOpacity
+        onPress={() => navigation.navigate("RegisterMerchant")}
+        style={{ marginTop: 20 }}
+      >
+        <Text style={{ textAlign: "center", color: "#0066cc" }}>
+          Criar nova conta
+        </Text>
+      </TouchableOpacity>
     </View>
   );
 }
